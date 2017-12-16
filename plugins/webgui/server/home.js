@@ -9,6 +9,11 @@ const flow = appRequire('plugins/flowSaver/flow');
 const knex = appRequire('init/knex').knex;
 const emailPlugin = appRequire('plugins/email/index');
 const push = appRequire('plugins/webgui/server/push');
+const macAccount = appRequire('plugins/macAccount/index');
+
+const formatMacAddress = mac => {
+  return mac.replace(/-/g, '').replace(/:/g, '').toLowerCase();
+};
 
 exports.signup = (req, res) => {
   req.checkBody('email', 'Invalid email').isEmail();
@@ -44,7 +49,7 @@ exports.signup = (req, res) => {
       const userId = success[0];
       // let port = 50000;
       return knex('webguiSetting').select().where({
-        key: 'system',
+        key: 'account',
       })
       .then(success => JSON.parse(success[0].value))
       .then(success => {
@@ -54,7 +59,7 @@ exports.signup = (req, res) => {
         }
         const getNewPort = () => {
           return knex('webguiSetting').select().where({
-            key: 'system',
+            key: 'account',
           }).then(success => {
             if(!success.length) { return Promise.reject('settings not found'); }
             success[0].value = JSON.parse(success[0].value);
@@ -152,6 +157,21 @@ exports.login = (req, res) => {
   });
 };
 
+exports.macLogin = (req, res) => {
+  delete req.session.user;
+  delete req.session.type;
+  const mac = formatMacAddress(req.body.mac);
+  const ip = req.headers['x-real-ip'] || req.connection.remoteAddress;
+  macAccount.login(mac, ip)
+  .then(success => {
+    req.session.user = success.userId;
+    req.session.type = 'normal';
+    return res.send('success');
+  }).catch(err => {
+    return res.status(403).end();
+  });
+};
+
 exports.logout = (req, res) => {
   delete req.session.user;
   delete req.session.type;
@@ -169,7 +189,7 @@ exports.sendCode = (req, res) => {
     return Promise.reject('invalid email');
   }).then(() => {
     return knex('webguiSetting').select().where({
-      key: 'system',
+      key: 'account',
     })
     .then(success => JSON.parse(success[0].value))
     .then(success => {
@@ -177,10 +197,20 @@ exports.sendCode = (req, res) => {
       return Promise.reject('signup close');
     });
   }).then(() => {
+    return knex('webguiSetting').select().where({
+      key: 'mail',
+    }).then(success => {
+      if(!success.length) {
+        return Promise.reject('settings not found');
+      }
+      success[0].value = JSON.parse(success[0].value);
+      return success[0].value.code;
+    });
+  }).then(success =>{
     const email = req.body.email.toString().toLowerCase();
     const ip = req.headers['x-real-ip'] || req.connection.remoteAddress;
     const session = req.sessionID;
-    return emailPlugin.sendCode(email, 'ss验证码', '欢迎新用户注册，\n您的验证码是：', {
+    return emailPlugin.sendCode(email, success.title || 'ss验证码', success.content || '欢迎新用户注册，\n您的验证码是：', {
       ip,
       session,
     });
@@ -201,13 +231,25 @@ exports.sendResetPasswordEmail = (req, res) => {
   const crypto = require('crypto');
   const email = req.body.email.toString().toLowerCase();
   let token = null;
-  knex('user').select().where({
-    username: email,
-  }).then(users => {
-    if(!users.length) {
-      return Promise.reject('user not exists');
+  let resetEmail;
+  knex('webguiSetting').select().where({
+    key: 'mail',
+  }).then(success => {
+    if(!success.length) {
+      return Promise.reject('settings not found');
     }
-    return users[0];
+    success[0].value = JSON.parse(success[0].value);
+    return success[0].value.reset;
+  }).then(success => {
+    resetEmail = success;
+    return knex('user').select().where({
+      username: email,
+    }).then(users => {
+      if(!users.length) {
+        return Promise.reject('user not exists');
+      }
+      return users[0];
+    });
   }).then(user => {
     if(user.resetPasswordTime + 600 * 1000 >= Date.now()) {
       return Promise.reject('already send');
@@ -216,7 +258,12 @@ exports.sendResetPasswordEmail = (req, res) => {
     const ip = req.headers['x-real-ip'] || req.connection.remoteAddress;
     const session = req.sessionID;
     const address = config.plugins.webgui.site + '/home/password/reset/' + token;
-    return emailPlugin.sendMail(email, 'ss密码重置', '请访问下列地址重置您的密码：\n' + address, {
+    if(resetEmail.content.indexOf('${address}') >= 0) {
+      resetEmail.content = resetEmail.content.replace(/\$\{address\}/g, address);
+    } else {
+      resetEmail.content += '\n' + address;
+    }
+    return emailPlugin.sendMail(email, resetEmail.title, resetEmail.content, {
       ip,
       session,
       type: 'reset',

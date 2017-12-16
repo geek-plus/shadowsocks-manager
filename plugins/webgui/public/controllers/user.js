@@ -32,14 +32,18 @@ app
       icon: 'home',
       click: 'user.index'
     }, {
-      name: '我的账号',
+      name: '账号',
       icon: 'account_circle',
       click: 'user.account'
+    }, {
+      name: '设置',
+      icon: 'settings',
+      click: 'user.changePassword'
     }, {
       name: 'divider',
     }, {
       name: '退出',
-      icon: 'settings',
+      icon: 'exit_to_app',
       click: function() {
         $http.post('/api/home/logout').then(() => {
           $localStorage.home = {};
@@ -84,7 +88,7 @@ app
 .controller('UserIndexController', ['$scope', '$state', 'userApi', 'markdownDialog',
   ($scope, $state, userApi, markdownDialog) => {
     $scope.setTitle('首页');
-    $scope.notices = [];
+    // $scope.notices = [];
     userApi.getNotice().then(success => {
       $scope.notices = success;
     });
@@ -98,7 +102,7 @@ app
 ])
 .controller('UserAccountController', ['$scope', '$http', '$mdMedia', 'userApi', 'alertDialog', 'payDialog', 'qrcodeDialog', '$interval', '$localStorage', 'changePasswordDialog',
   ($scope, $http, $mdMedia, userApi, alertDialog, payDialog, qrcodeDialog, $interval, $localStorage, changePasswordDialog) => {
-    $scope.setTitle('我的账号');
+    $scope.setTitle('账号');
     $scope.flexGtSm = 100;
     if(!$localStorage.user.serverInfo) {
       $localStorage.user.serverInfo = {
@@ -156,7 +160,7 @@ app
     };
     getUserAccountInfo();
 
-    const base64Encode = (str) => {
+    const base64Encode = str => {
       return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) {
         return String.fromCharCode('0x' + p1);
       }));
@@ -165,11 +169,11 @@ app
       return 'ss://' + base64Encode(method + ':' + password + '@' + host + ':' + port);
     };
 
-    $scope.getServerPortData = (account, serverId, port) => {
+    $scope.getServerPortData = (account, serverId) => {
       account.currentServerId = serverId;
       const scale = $scope.servers.filter(f => f.id === serverId)[0].scale;
       if(!account.isFlowOutOfLimit) { account.isFlowOutOfLimit = {}; }
-      userApi.getServerPortData(account, serverId, port).then(success => {
+      userApi.getServerPortData(account, serverId).then(success => {
         account.lastConnect = success.lastConnect;
         account.serverPortFlow = success.flow;
         let maxFlow = 0;
@@ -184,13 +188,18 @@ app
       if(status === 'visible') {
         if($localStorage.user.accountInfo && Date.now() - $localStorage.user.accountInfo.time >= 10 * 1000) {
           $scope.account.forEach(a => {
-            $scope.getServerPortData(a, a.currentServerId, a.port);
+            $scope.getServerPortData(a, a.currentServerId);
           });
         }
       }
     });
     $scope.setInterval($interval(() => {
-      if($scope.account) { userApi.updateAccount($scope.account); }
+      if($scope.account) {
+        userApi.updateAccount($scope.account)
+        .then(() => {
+          setAccountServerList($scope.account, $scope.servers);
+        });
+      }
       $scope.account.forEach(a => {
         const currentServerId = a.currentServerId;
         userApi.getServerPortData(a, a.currentServerId, a.port).then(success => {
@@ -235,6 +244,43 @@ app
     $scope.showQrcodeDialog = (method, password, host, port, serverName) => {
       const ssAddress = $scope.createQrCode(method, password, host, port, serverName);
       qrcodeDialog.show(serverName, ssAddress);
+    };
+    $scope.cycleStyle = account => {
+      let percent = 0;
+      if(account.type !== 1) {
+        percent = ((Date.now() - account.data.from) / (account.data.to - account.data.from) * 100).toFixed(0);
+      }
+      if(percent > 100) {
+        percent = 100;
+      }
+      return {
+        background: `linear-gradient(90deg, rgba(0,0,0,0.12) ${ percent }%, rgba(0,0,0,0) 0%)`
+      };
+    };
+  }
+])
+.controller('UserChangePasswordController', ['$scope', '$state', 'userApi', 'alertDialog', '$http', '$localStorage',
+  ($scope, $state, userApi, alertDialog, $http, $localStorage) => {
+    $scope.setTitle('设置');
+    $scope.data = {
+      password: '',
+      newPassword: '',
+      newPasswordAgain: '',
+    };
+    $scope.confirm = () => {
+      alertDialog.loading();
+      userApi.changePassword($scope.data.password, $scope.data.newPassword).then(success => {
+        alertDialog.show('修改密码成功，请重新登录', '确定')
+        .then(() => {
+          return $http.post('/api/home/logout');
+        }).then(() => {
+          $localStorage.home = {};
+          $localStorage.user = {};
+          $state.go('home.index');
+        });
+      }).catch(err => {
+        alertDialog.show('修改密码失败', '确定');
+      });
     };
   }
 ]);

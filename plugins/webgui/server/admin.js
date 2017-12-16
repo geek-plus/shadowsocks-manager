@@ -161,32 +161,6 @@ exports.changeAccountData = (req, res) => {
   });
 };
 
-exports.getUsers = (req, res) => {
-  const page = +req.query.page || 1;
-  const pageSize = +req.query.pageSize || 20;
-  const search = req.query.search || '';
-  const sort = req.query.sort || 'id_asc';
-  user.getUserAndPaging({
-    page,
-    pageSize,
-    search,
-    sort,
-  }).then(success => {
-    success.users = success.users.map(m => {
-      return {
-        id: m.id,
-        email: m.email,
-        lastLogin: m.lastLogin,
-        username: m.username,
-      };
-    });
-    return res.send(success);
-  }).catch(err => {
-    console.log(err);
-    res.status(403).end();
-  });
-};
-
 exports.getRecentSignUpUsers = (req, res) => {
   user.getRecentSignUp(5).then(success => {
     return res.send(success);
@@ -310,6 +284,22 @@ exports.getUserOrders = (req, res) => {
   });
 };
 
+exports.getPaypalUserOrders = (req, res) => {
+  if(!isPaypalUse) {
+    return res.send([]);
+  }
+  const options = {
+    userId: +req.params.userId,
+  };
+  paypal.orderList(options)
+  .then(success => {
+    res.send(success);
+  }).catch(err => {
+    console.log(err);
+    res.status(403).end();
+  });
+};
+
 exports.getOrders = (req, res) => {
   if(!isAlipayUse) {
     return res.send({
@@ -361,31 +351,8 @@ exports.getPaypalOrders = (req, res) => {
 };
 
 exports.getUserPortLastConnect = (req, res) => {
-  const port = +req.params.port;
-  flow.getUserPortLastConnect(port).then(success => {
-    return res.send(success);
-  }).catch(err => {
-    console.log(err);
-    res.status(403).end();
-  });
-};
-
-exports.addUser = (req, res) => {
-  req.checkBody('email', 'Invalid email').notEmpty();
-  req.checkBody('password', 'Invalid password').notEmpty();
-  req.getValidationResult().then(result => {
-    if(result.isEmpty()) {
-      const email = req.body.email;
-      const password = req.body.password;
-      return user.add({
-        username: email,
-        email,
-        password,
-        type: 'normal',
-      });
-    }
-    result.throw();
-  }).then(success => {
+  const accountId = +req.params.accountId;
+  flow.getUserPortLastConnect(accountId).then(success => {
     return res.send(success);
   }).catch(err => {
     console.log(err);
@@ -433,7 +400,7 @@ exports.getAccountIp = (req, res) => {
     const port = accountInfo.port;
     return manager.send({
       command: 'ip',
-      port,
+      port: port + serverInfo.shift,
     }, {
       host: serverInfo.host,
       port: serverInfo.port,
@@ -457,14 +424,14 @@ exports.getAccountIpFromAllServer = (req, res) => {
     const getIp = (port, serverInfo) => {
       return manager.send({
         command: 'ip',
-        port,
+        port: port + serverInfo.shift,
       }, {
         host: serverInfo.host,
         port: serverInfo.port,
         password: serverInfo.password,
       });
     };
-    promiseArray = servers.map(server => {
+    const promiseArray = servers.map(server => {
       return getIp(accountInfo.port, server).catch(err => []);
     });
     return Promise.all(promiseArray);
@@ -484,11 +451,10 @@ exports.getAccountIpFromAllServer = (req, res) => {
 
 exports.getAccountIpInfo = (req, res) => {
   const ip = req.params.ip;
-  const uri = `http://ip.taobao.com/service/getIpInfo.php?ip=${ ip }`;
 
   const taobao = ip => {
     const uri = `http://ip.taobao.com/service/getIpInfo.php?ip=${ ip }`;
-    return rp({ uri }).then(success => {
+    return rp({ uri, timeout: 10 * 1000 }).then(success => {
       const decode = (s) => {
         return unescape(s.replace(/\\u/g, '%u'));
       };
@@ -504,22 +470,39 @@ exports.getAccountIpInfo = (req, res) => {
 
   const sina = ip => {
     const uri = `https://int.dpool.sina.com.cn/iplookup/iplookup.php?format=js&ip=${ ip }`;
-    return rp({ uri }).then(success => {
+    return rp({ uri, timeout: 10 * 1000 }).then(success => {
       const decode = (s) => {
         return unescape(s.replace(/\\u/g, '%u'));
       };
       return JSON.parse(decode(success.match(/^var remote_ip_info = ([\s\S]+);$/)[1]));
     }).then(success => {
-      // if(success.code !== 0) {
-      //   return Promise.reject(success.code);
-      // }
       const result = [success.province + success.city, success.isp];
       return result;
     });
   };
-  const getIpFunction = [taobao, sina];
-  const random = +Math.random().toString().substr(2) % getIpFunction.length;
-  getIpFunction[random](ip).then(success => {
+
+  const ipip = ip => {
+    const uri = `https://freeapi.ipip.net/${ ip }`;
+    return rp({ uri, timeout: 10 * 1000 }).then(success => {
+      const decode = (s) => {
+        return unescape(s.replace(/\\u/g, '%u'));
+      };
+      return JSON.parse(decode(success));
+    }).then(success => {
+      const result = [success[1] + success[2], success[4]];
+      return result;
+    });
+  };
+
+  const getIpFunction = ip => {
+    return taobao(ip).catch(() => {
+      return sina(ip);
+    }).catch(() => {
+      return ipip(ip);
+    });
+  };
+  getIpFunction(ip)
+  .then(success => {
     return res.send(success);
   }).catch(err => {
     return res.send(['', '']);
